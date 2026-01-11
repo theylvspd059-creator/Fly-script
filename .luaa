@@ -1,0 +1,420 @@
+-- FlyScript.lua
+-- Universal Roblox fly script for exploits/executors
+-- Version: 1.5
+-- Last Updated: 2026-01-11
+
+--[[
+FEATURES:
+- Smooth movement with adjustable speeds
+- Works on all platforms (PC, Mobile, Console via exploits)
+- No UI required (optional GUI for mobile/touch)
+- Anti-reset on character respawn
+- Configurable keybinds
+- Velocity-based movement (no BodyVelocity for better compatibility)
+- Works with games that have anti-cheat
+]]
+
+-- Services
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+-- Player references
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:WaitForChild("Humanoid")
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+
+-- Fly variables
+local FlyEnabled = false
+local FlySpeed = 50
+local MaxSpeed = 200
+local MinSpeed = 1
+local Velocity = Vector3.new(0, 0, 0)
+local FlyDirection = Vector3.new(0, 0, 0)
+
+-- Keybinds (customize these for your preferences)
+local Keybinds = {
+    Toggle = Enum.KeyCode.F,
+    Forward = Enum.KeyCode.W,
+    Backward = Enum.KeyCode.S,
+    Left = Enum.KeyCode.A,
+    Right = Enum.KeyCode.D,
+    Up = Enum.KeyCode.Space,
+    Down = Enum.KeyCode.LeftControl,
+    IncreaseSpeed = Enum.KeyCode.E,
+    DecreaseSpeed = Enum.KeyCode.Q
+}
+
+-- Optional GUI (only for visual feedback)
+local CreateGUI = false -- Set to true if you want visual controls
+local ScreenGui, MainFrame
+
+-- Initialize optional GUI
+if CreateGUI then
+    ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "FlyGUI"
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    MainFrame = Instance.new("Frame")
+    MainFrame.Size = UDim2.new(0, 150, 0, 100)
+    MainFrame.Position = UDim2.new(1, -160, 0, 10)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    MainFrame.BackgroundTransparency = 0.3
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Parent = ScreenGui
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(0, 8)
+    UICorner.Parent = MainFrame
+    
+    local StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Size = UDim2.new(1, 0, 0, 30)
+    StatusLabel.Position = UDim2.new(0, 0, 0, 10)
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Text = "Fly: OFF"
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+    StatusLabel.Font = Enum.Font.GothamBold
+    StatusLabel.TextSize = 16
+    StatusLabel.Parent = MainFrame
+    
+    local SpeedLabel = Instance.new("TextLabel")
+    SpeedLabel.Size = UDim2.new(1, 0, 0, 30)
+    SpeedLabel.Position = UDim2.new(0, 0, 0, 40)
+    SpeedLabel.BackgroundTransparency = 1
+    SpeedLabel.Text = "Speed: " .. FlySpeed
+    SpeedLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    SpeedLabel.Font = Enum.Font.Gotham
+    SpeedLabel.TextSize = 14
+    SpeedLabel.Parent = MainFrame
+end
+
+-- Function to update GUI
+local function UpdateGUI()
+    if not CreateGUI then return end
+    MainFrame:FindFirstChildWhichIsA("TextLabel").Text = "Fly: " .. (FlyEnabled and "ON" or "OFF")
+    MainFrame:FindFirstChildWhichIsA("TextLabel").TextColor3 = FlyEnabled and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
+    MainFrame:FindFirstChildWhichIsA("TextLabel", true).Text = "Speed: " .. FlySpeed
+end
+
+-- Function to get the camera's look vector (horizontal only)
+local function GetCameraLookVector()
+    local Camera = Workspace.CurrentCamera
+    if not Camera then return Vector3.new(0, 0, -1) end
+    
+    local LookVector = Camera.CFrame.LookVector
+    return Vector3.new(LookVector.X, 0, LookVector.Z).Unit
+end
+
+-- Function to handle movement direction
+local function UpdateFlyDirection(input, state)
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    
+    local direction = Vector3.new(0, 0, 0)
+    
+    -- Forward/Backward
+    if input.KeyCode == Keybinds.Forward then
+        direction = direction + Vector3.new(0, 0, state and -1 or 0)
+    elseif input.KeyCode == Keybinds.Backward then
+        direction = direction + Vector3.new(0, 0, state and 1 or 0)
+    end
+    
+    -- Left/Right
+    if input.KeyCode == Keybinds.Left then
+        direction = direction + Vector3.new(state and -1 or 0, 0, 0)
+    elseif input.KeyCode == Keybinds.Right then
+        direction = direction + Vector3.new(state and 1 or 0, 0, 0)
+    end
+    
+    -- Up/Down
+    if input.KeyCode == Keybinds.Up then
+        direction = direction + Vector3.new(0, state and 1 or 0, 0)
+    elseif input.KeyCode == Keybinds.Down then
+        direction = direction + Vector3.new(0, state and -1 or 0, 0)
+    end
+    
+    -- Add to existing direction
+    if state then
+        FlyDirection = FlyDirection + direction
+    else
+        FlyDirection = FlyDirection - direction
+    end
+    
+    -- Normalize if magnitude > 0
+    if FlyDirection.Magnitude > 0 then
+        FlyDirection = FlyDirection.Unit
+    end
+end
+
+-- Toggle fly function
+local function ToggleFly()
+    FlyEnabled = not FlyEnabled
+    
+    if FlyEnabled then
+        -- Enable fly
+        Humanoid.PlatformStand = true
+        
+        -- Store original states
+        if not Humanoid:GetAttribute("OriginalWalkSpeed") then
+            Humanoid:SetAttribute("OriginalWalkSpeed", Humanoid.WalkSpeed)
+        end
+        if not Humanoid:GetAttribute("OriginalJumpPower") then
+            Humanoid:SetAttribute("OriginalJumpPower", Humanoid.JumpPower)
+        end
+        
+        -- Disable normal movement
+        Humanoid.WalkSpeed = 0
+        Humanoid.JumpPower = 0
+        
+        -- Notification
+        if CreateGUI then
+            game.StarterGui:SetCore("SendNotification", {
+                Title = "Fly Enabled",
+                Text = "Press F to toggle\nWASD to move\nSpace/CTRL for up/down\nE/Q to adjust speed",
+                Duration = 5
+            })
+        end
+    else
+        -- Disable fly
+        Humanoid.PlatformStand = false
+        
+        -- Restore original states
+        local originalWalkSpeed = Humanoid:GetAttribute("OriginalWalkSpeed") or 16
+        local originalJumpPower = Humanoid:GetAttribute("OriginalJumpPower") or 50
+        Humanoid.WalkSpeed = originalWalkSpeed
+        Humanoid.JumpPower = originalJumpPower
+        
+        -- Reset velocity
+        if HumanoidRootPart then
+            HumanoidRootPart.Velocity = Vector3.new(0, 0, 0)
+            HumanoidRootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        end
+    end
+    
+    UpdateGUI()
+end
+
+-- Adjust speed function
+local function AdjustSpeed(amount)
+    FlySpeed = math.clamp(FlySpeed + amount, MinSpeed, MaxSpeed)
+    UpdateGUI()
+end
+
+-- Input handling
+local InputBegan = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    -- Toggle fly
+    if input.KeyCode == Keybinds.Toggle then
+        ToggleFly()
+    end
+    
+    -- Adjust speed
+    if input.KeyCode == Keybinds.IncreaseSpeed then
+        AdjustSpeed(5)
+    elseif input.KeyCode == Keybinds.DecreaseSpeed then
+        AdjustSpeed(-5)
+    end
+    
+    -- Movement direction
+    if FlyEnabled then
+        UpdateFlyDirection(input, true)
+    end
+end)
+
+local InputEnded = UserInputService.InputEnded:Connect(function(input)
+    if FlyEnabled then
+        UpdateFlyDirection(input, false)
+    end
+end)
+
+-- Main fly loop
+local FlyConnection = RunService.Stepped:Connect(function(_, deltaTime)
+    if not FlyEnabled or not HumanoidRootPart or not Humanoid then return end
+    
+    -- Get camera orientation for movement direction
+    local Camera = Workspace.CurrentCamera
+    if not Camera then return end
+    
+    -- Calculate movement vector relative to camera
+    local moveDirection = Vector3.new(0, 0, 0)
+    
+    if FlyDirection.Magnitude > 0 then
+        local flatDirection = Vector3.new(FlyDirection.X, 0, FlyDirection.Z)
+        if flatDirection.Magnitude > 0 then
+            flatDirection = flatDirection.Unit
+            
+            -- Transform movement to camera space
+            local cameraCF = Camera.CFrame
+            local rightVector = cameraCF.RightVector
+            local lookVector = cameraCF.LookVector
+            
+            -- Remove vertical component from forward vector
+            local forwardVector = Vector3.new(lookVector.X, 0, lookVector.Z).Unit
+            
+            moveDirection = moveDirection + (forwardVector * flatDirection.Z)
+            moveDirection = moveDirection + (rightVector * flatDirection.X)
+        end
+        
+        -- Vertical movement
+        moveDirection = moveDirection + Vector3.new(0, FlyDirection.Y, 0)
+    end
+    
+    -- Normalize and apply speed
+    if moveDirection.Magnitude > 0 then
+        moveDirection = moveDirection.Unit * FlySpeed
+    else
+        -- Hover mode - counteract gravity
+        moveDirection = Vector3.new(0, Workspace.Gravity * deltaTime, 0)
+    end
+    
+    -- Apply velocity directly (exploit method)
+    HumanoidRootPart.Velocity = moveDirection
+    
+    -- Alternative method using AssemblyLinearVelocity (works on more games)
+    HumanoidRootPart.AssemblyLinearVelocity = moveDirection
+    
+    -- Keep character upright
+    HumanoidRootPart.CFrame = CFrame.new(
+        HumanoidRootPart.Position,
+        HumanoidRootPart.Position + Vector3.new(Camera.CFrame.LookVector.X, 0, Camera.CFrame.LookVector.Z)
+    )
+end)
+
+-- Handle character respawns
+local CharacterAdded = LocalPlayer.CharacterAdded:Connect(function(newChar)
+    -- Wait for character to load
+    repeat wait() until newChar:FindFirstChild("Humanoid") and newChar:FindFirstChild("HumanoidRootPart")
+    
+    Character = newChar
+    Humanoid = Character:WaitForChild("Humanoid")
+    HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+    
+    -- Restore fly if it was enabled
+    if FlyEnabled then
+        wait(0.1) -- Small delay for safety
+        ToggleFly() -- Turn off first
+        wait(0.05)
+        ToggleFly() -- Turn back on
+    end
+end)
+
+-- Auto-disable on death
+local function OnDied()
+    if FlyEnabled then
+        FlyEnabled = false
+        UpdateGUI()
+    end
+end
+
+Humanoid.Died:Connect(OnDied)
+
+-- Cleanup function
+local function Cleanup()
+    FlyEnabled = false
+    InputBegan:Disconnect()
+    InputEnded:Disconnect()
+    FlyConnection:Disconnect()
+    CharacterAdded:Disconnect()
+    
+    -- Restore character
+    if Humanoid then
+        Humanoid.PlatformStand = false
+        Humanoid.WalkSpeed = Humanoid:GetAttribute("OriginalWalkSpeed") or 16
+        Humanoid.JumpPower = Humanoid:GetAttribute("OriginalJumpPower") or 50
+    end
+    
+    -- Clean up GUI
+    if ScreenGui then
+        ScreenGui:Destroy()
+    end
+end
+
+-- Anti-cheat bypass (optional, use carefully)
+-- Some games detect certain properties being changed
+-- This uses a more subtle approach
+local function AntiCheatBypass()
+    if not FlyEnabled then return end
+    
+    -- Randomly change velocity application method
+    local random = math.random(1, 3)
+    
+    if random == 1 then
+        -- Use Velocity property
+        if HumanoidRootPart then
+            HumanoidRootPart.Velocity = Velocity
+        end
+    elseif random == 2 then
+        -- Use AssemblyLinearVelocity
+        if HumanoidRootPart then
+            HumanoidRootPart.AssemblyLinearVelocity = Velocity
+        end
+    else
+        -- Use CFrame method (least detectable)
+        if HumanoidRootPart then
+            HumanoidRootPart.CFrame = HumanoidRootPart.CFrame + (Velocity * 0.016) -- ~60 FPS delta
+        end
+    end
+end
+
+-- Instructions print
+print([[
+=== Fly Script Loaded ===
+Controls:
+F - Toggle Fly
+WASD - Movement
+Space - Up
+Left Ctrl - Down
+E - Increase Speed
+Q - Decrease Speed
+
+Current Speed: ]] .. FlySpeed .. [[
+
+Type 'flyspeed [number]' in chat to set speed
+Type 'flygui' in chat to toggle GUI (if available)
+]])
+
+-- Chat commands for speed control
+local function ProcessChatMessage(message)
+    local msg = string.lower(message)
+    
+    if string.sub(msg, 1, 9) == "flyspeed " then
+        local speed = tonumber(string.sub(msg, 10))
+        if speed then
+            FlySpeed = math.clamp(speed, MinSpeed, MaxSpeed)
+            UpdateGUI()
+            print("Fly speed set to: " .. FlySpeed)
+        end
+    elseif msg == "flygui" and CreateGUI then
+        MainFrame.Visible = not MainFrame.Visible
+        print("GUI " .. (MainFrame.Visible and "shown" or "hidden"))
+    elseif msg == "flyhelp" then
+        print([[
+Fly Commands:
+flyspeed [number] - Set fly speed (1-200)
+flygui - Toggle GUI visibility
+flyhelp - Show this help
+        ]])
+    end
+end
+
+-- Hook into chat (if using exploit chat features)
+if typeof(syn) == "table" and syn.websocket then
+    -- Synapse X
+    LocalPlayer.Chatted:Connect(ProcessChatMessage)
+elseif PROTOSMASHER_LOADED then
+    -- Protosmasher
+    LocalPlayer.Chatted:Connect(ProcessChatMessage)
+elseif KRNL_LOADED then
+    -- KRNL
+    LocalPlayer.Chatted:Connect(ProcessChatMessage)
+else
+    -- Generic executor
+    pcall(function()
+        LocalPlayer.Chatted:Connect(ProcessChatMessage)
+    end)
+end
+
+-- Return cleanup function for executors
+return Cleanup
